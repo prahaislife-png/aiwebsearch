@@ -122,11 +122,10 @@ function calculateEvidenceScore(evidence: EvidenceRow[], coverage: CoverageItem[
   );
   if (capturedWithManualReview.length > 0) score -= 10;
 
-  // Penalty if official website cannot be captured AND no search evidence
+  // Only penalize if section was actually checked and not found
   if (catStatus('official_website') === 'Not found') score -= 15;
-
-  // Penalty if registry missing
   if (catStatus('public_registry') === 'Not found') score -= 10;
+  // "Not checked" sections don't penalize — they just don't add points
 
   return Math.max(0, Math.min(100, score));
 }

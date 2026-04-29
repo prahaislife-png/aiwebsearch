@@ -21,7 +21,8 @@ export interface ReportSummary {
 
 export function generateSummary(
   evidenceItems: EvidenceItem[],
-  reportType: string
+  reportType: string,
+  checkedSections?: Set<string>
 ): { summary: ReportSummary; finalComment: string; coverage: CoverageSummary } {
   const coverage = buildCoverageSummary(evidenceItems);
 
@@ -30,12 +31,15 @@ export function generateSummary(
     const captured = items.filter((e) => e.capture_status === 'captured');
     const searchOnly = items.filter((e) => e.capture_status === 'search_only');
 
-    if (captured.length > 0) {
-      const hasHigh = captured.some((e) => e.confidence === 'High');
-      return hasHigh ? 'Captured' : 'Captured';
-    }
+    if (captured.length > 0) return 'Captured';
     if (searchOnly.length > 0) return 'Search evidence only';
-    return 'Not found';
+
+    // Was this section actually checked?
+    const wasChecked = checkedSections
+      ? sectionKeys.some((k) => checkedSections.has(k))
+      : true;
+
+    return wasChecked ? 'Not found' : 'Not checked';
   };
 
   const hasManualReview = evidenceItems.some(
@@ -52,10 +56,17 @@ export function generateSummary(
       reportType === 'enhanced' || reportType === 'kyc' || reportType === 'full'
         ? statusForSection(['group_shareholding'])
         : 'Not checked',
-    manualReviewNeeded: hasManualReview ? 'Yes' : 'No',
+    manualReviewNeeded: hasManualReview || coverage.score < 40 ? 'Yes' : 'No',
     evidenceScore: coverage.score,
     evidenceStrength: coverage.strength,
   };
+
+  // If contact/registry/management are not checked, manual review needed
+  const hasUnchecked = [summary.contactAddress, summary.publicRegistry, summary.managementHistory]
+    .some((s) => s === 'Not checked' || s === 'Incomplete');
+  if (hasUnchecked) {
+    summary.manualReviewNeeded = 'Yes';
+  }
 
   const finalComment = generateFinalSummary(coverage);
 

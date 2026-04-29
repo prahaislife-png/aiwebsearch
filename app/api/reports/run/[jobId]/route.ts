@@ -5,8 +5,9 @@ import { ApifyCaptureProvider } from '@/lib/browser-capture/apify-provider';
 import { MockCaptureProvider } from '@/lib/browser-capture/mock-provider';
 import { analyzeEvidence, analyzeSerpSnippet } from '@/lib/ai/analyze-evidence';
 import { generateSummary } from '@/lib/report-summary';
-import { CaptureProvider } from '@/lib/browser-capture/capture-provider';
+import { CaptureProvider, CaptureResult } from '@/lib/browser-capture/capture-provider';
 import { isRelevantToCompany, isHighValueFailedSource } from '@/lib/relevance';
+import { discoverImportantInternalPages } from '@/lib/internal-pages';
 import { NextResponse } from 'next/server';
 
 export const maxDuration = 300;
@@ -92,7 +93,7 @@ export async function POST(
       .eq('id', jobId);
 
     const captureProvider = getCaptureProvider();
-    const captureResults = await captureProvider.capturePages({
+    let captureResults = await captureProvider.capturePages({
       jobId,
       companyName: job.company_name,
       country: job.country,
@@ -102,6 +103,82 @@ export async function POST(
         url: s.sourceUrl,
       })),
     });
+
+    // Step 2b: Internal page discovery from official website
+    const officialWebsiteCapture = captureResults.find(
+      (r) => r.status === 'success' && r.sectionKey === 'official_website' && r.extractedText
+    );
+
+    let internalPageResults: CaptureResult[] = [];
+
+    if (officialWebsiteCapture && officialWebsiteCapture.extractedText) {
+      console.log(`[RunJob] OFFICIAL_SITE_CAPTURED: ${officialWebsiteCapture.sourceUrl}`);
+
+      await admin
+        .from('web_search_jobs')
+        .update({ progress_step: 'Discovering internal pages...' })
+        .eq('id', jobId);
+
+      const maxInternalPages = job.report_type === 'basic' || job.report_type === 'BASIC' ? 6 : 10;
+      const internalPages = discoverImportantInternalPages(
+        officialWebsiteCapture.sourceUrl,
+        officialWebsiteCapture.extractedText,
+        maxInternalPages
+      );
+
+      if (internalPages.length > 0) {
+        // Filter out pages already in capture list
+        const alreadyCapturedUrls = new Set(captureResults.map((r) => r.sourceUrl));
+        const newInternalPages = internalPages.filter((p) => !alreadyCapturedUrls.has(p.url));
+
+        if (newInternalPages.length > 0) {
+          console.log(`[RunJob] Capturing ${newInternalPages.length} internal pages...`);
+
+          await admin
+            .from('web_search_jobs')
+            .update({ progress_step: `Capturing ${newInternalPages.length} internal pages...` })
+            .eq('id', jobId);
+
+          internalPageResults = await captureProvider.capturePages({
+            jobId,
+            companyName: job.company_name,
+            country: job.country,
+            urls: newInternalPages.map((p) => ({
+              sectionKey: p.sectionKey,
+              sectionTitle: p.sectionTitle,
+              url: p.url,
+            })),
+          });
+
+          for (const result of internalPageResults) {
+            if (result.status === 'success') {
+              console.log(`[RunJob] IMPORTANT_INTERNAL_PAGE_CAPTURE_SUCCESS: ${result.sourceUrl}`);
+            } else {
+              console.log(`[RunJob] IMPORTANT_INTERNAL_PAGE_CAPTURE_FAILED: ${result.sourceUrl}`);
+            }
+          }
+
+          // Store internal page sources
+          for (const page of newInternalPages) {
+            await admin.from('web_search_sources').insert({
+              job_id: jobId,
+              section_key: page.sectionKey,
+              section_title: page.sectionTitle,
+              source_url: page.url,
+              source_type: 'internal_page',
+              discovery_method: `Internal page (${page.source}): ${page.category}`,
+              selected: true,
+            });
+          }
+        }
+      }
+    }
+
+    // Combine all capture results
+    const allCaptureResults = [...captureResults, ...internalPageResults];
+
+    // Track which section_keys have been checked
+    const checkedSections = new Set<string>();
 
     // Step 3: Analyze captured evidence with post-capture relevance validation
     await admin
@@ -114,24 +191,29 @@ export async function POST(
     let failedHighValue = 0;
     let failedHidden = 0;
 
-    for (const capture of captureResults) {
-      if (capture.status === 'success') {
-        // Post-capture relevance check on extracted text
-        const postRelevance = isRelevantToCompany(
-          {
-            url: capture.sourceUrl,
-            title: capture.pageTitle || '',
-            snippet: '',
-            extractedText: capture.extractedText,
-          },
-          job.company_name,
-          officialDomain
-        );
+    for (const capture of allCaptureResults) {
+      checkedSections.add(capture.sectionKey);
 
-        if (!postRelevance.relevant) {
-          rejectedCount++;
-          console.log(`[RunJob] REJECTED_IRRELEVANT_SOURCE (post-capture): ${capture.sourceUrl} - ${postRelevance.reason}`);
-          continue;
+      if (capture.status === 'success') {
+        // Post-capture relevance check — skip for internal pages (they're on the official domain)
+        const isInternalPage = internalPageResults.includes(capture);
+        if (!isInternalPage) {
+          const postRelevance = isRelevantToCompany(
+            {
+              url: capture.sourceUrl,
+              title: capture.pageTitle || '',
+              snippet: '',
+              extractedText: capture.extractedText,
+            },
+            job.company_name,
+            officialDomain
+          );
+
+          if (!postRelevance.relevant) {
+            rejectedCount++;
+            console.log(`[RunJob] REJECTED_IRRELEVANT_SOURCE (post-capture): ${capture.sourceUrl} - ${postRelevance.reason}`);
+            continue;
+          }
         }
 
         // Analyze the captured page
@@ -144,23 +226,25 @@ export async function POST(
           companyName: job.company_name,
         });
 
-        // Check if AI analysis says the page is irrelevant
-        const aiComment = (analysis.aiComment || '').toLowerCase();
-        const isAiRejected =
-          aiComment.includes('does not contain') ||
-          aiComment.includes('not mentioned') ||
-          aiComment.includes('not related to') ||
-          aiComment.includes('no information about') ||
-          (analysis.flags.includes('manual_review_needed') && !analysis.flags.some(f =>
-            f === 'website_identified' || f === 'company_activity_found' ||
-            f === 'operational_address_found' || f === 'registry_found' ||
-            f === 'management_found' || f === 'parent_company_found'
-          ));
+        // Check if AI analysis says the page is irrelevant (skip for internal pages)
+        if (!isInternalPage) {
+          const aiComment = (analysis.aiComment || '').toLowerCase();
+          const isAiRejected =
+            aiComment.includes('does not contain') ||
+            aiComment.includes('not mentioned') ||
+            aiComment.includes('not related to') ||
+            aiComment.includes('no information about') ||
+            (analysis.flags.includes('manual_review_needed') && !analysis.flags.some(f =>
+              f === 'website_identified' || f === 'company_activity_found' ||
+              f === 'operational_address_found' || f === 'registry_found' ||
+              f === 'management_found' || f === 'parent_company_found'
+            ));
 
-        if (isAiRejected && analysis.confidence === 'Low') {
-          rejectedCount++;
-          console.log(`[RunJob] REJECTED_IRRELEVANT_SOURCE (AI analysis): ${capture.sourceUrl}`);
-          continue;
+          if (isAiRejected && analysis.confidence === 'Low') {
+            rejectedCount++;
+            console.log(`[RunJob] REJECTED_IRRELEVANT_SOURCE (AI analysis): ${capture.sourceUrl}`);
+            continue;
+          }
         }
 
         const { data: sourceRecord } = await admin
@@ -243,6 +327,7 @@ export async function POST(
     // Analyze SERP-only sources (snippets from blocked but relevant domains)
     for (const serpSource of serpOnlySources) {
       if (!serpSource.snippet) continue;
+      checkedSections.add(serpSource.sectionKey);
 
       const analysis = await analyzeSerpSnippet({
         sectionKey: serpSource.sectionKey,
@@ -289,7 +374,8 @@ export async function POST(
 
     const { summary, finalComment, coverage } = generateSummary(
       allEvidence || [],
-      job.report_type
+      job.report_type,
+      checkedSections
     );
 
     await admin
@@ -307,7 +393,7 @@ export async function POST(
       job_id: jobId,
       user_id: user.id,
       activity_type: 'job_completed',
-      message: `Report completed: ${capturedCount} captured, ${serpOnlySources.length} SERP, ${failedHighValue} high-value failed, ${failedHidden} hidden, ${rejectedCount} rejected irrelevant. Score ${coverage.score}/100`,
+      message: `Report completed: ${capturedCount} captured (${internalPageResults.filter(r => r.status === 'success').length} internal), ${serpOnlySources.length} SERP, ${failedHighValue} high-value failed, ${failedHidden} hidden, ${rejectedCount} rejected. Score ${coverage.score}/100`,
     });
 
     return NextResponse.json({ success: true, jobId });

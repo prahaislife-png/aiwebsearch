@@ -315,6 +315,8 @@ export default function ReportViewerPage() {
                     value === 'Captured' ? 'text-success' :
                     value === 'Search evidence only' ? 'text-accent' :
                     value === 'Not found' ? 'text-error' :
+                    value === 'Not checked' ? 'text-muted' :
+                    value === 'Incomplete' ? 'text-warning' :
                     value === 'Yes' ? 'text-success' :
                     value === 'No' ? 'text-error' :
                     'text-muted'
