@@ -6,6 +6,8 @@ import { analyzeEvidence } from '@/lib/ai/analyze-evidence';
 import { CaptureProvider } from '@/lib/browser-capture/capture-provider';
 import { NextResponse } from 'next/server';
 
+export const maxDuration = 300;
+
 function getCaptureProvider(): CaptureProvider {
   if (process.env.APIFY_TOKEN && process.env.APIFY_WEB_SEARCH_ACTOR_ID) {
     return new ApifyCaptureProvider();

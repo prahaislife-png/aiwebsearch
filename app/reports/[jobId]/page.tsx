@@ -64,6 +64,14 @@ export default function ReportViewerPage() {
     loadReport();
   }, [loadReport]);
 
+  // Auto-trigger run when job is queued
+  useEffect(() => {
+    if (job && job.status === 'queued' && !running) {
+      handleRun();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job?.status]);
+
   useEffect(() => {
     if (job && ['queued', 'discovering_sources', 'capturing_screenshots', 'analyzing'].includes(job.status)) {
       const interval = setInterval(loadReport, 3000);
@@ -74,16 +82,13 @@ export default function ReportViewerPage() {
   const handleRun = async () => {
     setRunning(true);
     try {
-      const res = await fetch(`/api/reports/run/${jobId}`, { method: 'POST' });
-      if (!res.ok) {
-        const data = await res.json();
-        alert(data.error || 'Failed to run report');
-      }
+      fetch(`/api/reports/run/${jobId}`, { method: 'POST' }).catch(() => {});
+      // Don't wait for the response - just start polling
+      setTimeout(loadReport, 2000);
     } catch {
       alert('Failed to run report');
     }
     setRunning(false);
-    loadReport();
   };
 
   const handleAddSource = async (e: React.FormEvent) => {

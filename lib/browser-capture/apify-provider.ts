@@ -1,44 +1,40 @@
 import { CaptureProvider, CaptureInput, CaptureResult } from './capture-provider';
-import { getApifyClient } from '../apify/client';
+import { runActor, getDatasetItems } from '../apify/client';
+
+interface CrawlerItem {
+  url?: string;
+  loadedUrl?: string;
+  screenshotUrl?: string;
+  text?: string;
+  title?: string;
+  metadata?: { title?: string };
+}
 
 export class ApifyCaptureProvider implements CaptureProvider {
   async capturePages(input: CaptureInput): Promise<CaptureResult[]> {
-    const client = getApifyClient();
     const actorId = process.env.APIFY_WEB_SEARCH_ACTOR_ID;
     if (!actorId) throw new Error('APIFY_WEB_SEARCH_ACTOR_ID is not configured');
 
     const startUrls = input.urls.map((u) => ({ url: u.url }));
 
-    const run = await client.actor(actorId).call(
-      {
-        startUrls,
-        maxCrawlPages: input.urls.length,
-        crawlerType: 'playwright:firefox',
-        includeUrlGlobs: [],
-        excludeUrlGlobs: [],
-        maxCrawlDepth: 0,
-        saveScreenshots: true,
-        saveHtml: false,
-        removeCookieWarnings: true,
-        clickElementsCssSelector: '[class*="cookie"] button, [id*="cookie"] button, [class*="consent"] button',
-      },
-      { waitSecs: 300, memory: 4096 } as Record<string, unknown>
-    );
+    const run = await runActor(actorId, {
+      startUrls,
+      maxCrawlPages: input.urls.length,
+      crawlerType: 'playwright:firefox',
+      includeUrlGlobs: [],
+      excludeUrlGlobs: [],
+      maxCrawlDepth: 0,
+      saveScreenshots: true,
+      saveHtml: false,
+      removeCookieWarnings: true,
+      clickElementsCssSelector:
+        '[class*="cookie"] button, [id*="cookie"] button, [class*="consent"] button',
+    }, { waitSecs: 300, memory: 4096 });
 
     const results: CaptureResult[] = [];
-    const { items } = await client.dataset(run.defaultDatasetId).listItems();
+    const items = (await getDatasetItems(run.defaultDatasetId)) as CrawlerItem[];
 
-    interface CrawlerItem {
-      url?: string;
-      loadedUrl?: string;
-      screenshotUrl?: string;
-      text?: string;
-      title?: string;
-      metadata?: { title?: string };
-    }
-
-    for (const rawItem of items) {
-      const item = rawItem as unknown as CrawlerItem;
+    for (const item of items) {
       const matchingInput = input.urls.find(
         (u) => u.url === item.url || u.url === item.loadedUrl
       );
@@ -48,10 +44,8 @@ export class ApifyCaptureProvider implements CaptureProvider {
       const sourceUrl = matchingInput?.url || item.url || '';
 
       const screenshotUrl = item.screenshotUrl || undefined;
-
-      const extractedText = typeof item.text === 'string'
-        ? item.text.substring(0, 5000)
-        : undefined;
+      const extractedText =
+        typeof item.text === 'string' ? item.text.substring(0, 5000) : undefined;
 
       results.push({
         sectionKey,

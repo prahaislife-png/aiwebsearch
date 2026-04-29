@@ -8,6 +8,8 @@ import { generateSummary } from '@/lib/report-summary';
 import { CaptureProvider } from '@/lib/browser-capture/capture-provider';
 import { NextResponse } from 'next/server';
 
+export const maxDuration = 300;
+
 function getCaptureProvider(): CaptureProvider {
   if (process.env.APIFY_TOKEN && process.env.APIFY_WEB_SEARCH_ACTOR_ID) {
     return new ApifyCaptureProvider();
@@ -32,7 +34,6 @@ export async function POST(
 
     const admin = createAdminClient();
 
-    // Get job
     const { data: job } = await admin
       .from('web_search_jobs')
       .select('*')
@@ -107,7 +108,6 @@ export async function POST(
         });
       }
 
-      // Find the source record
       const { data: sourceRecord } = await admin
         .from('web_search_sources')
         .select('id')
@@ -145,7 +145,6 @@ export async function POST(
       job.report_type
     );
 
-    // Update job as completed
     await admin
       .from('web_search_jobs')
       .update({
@@ -157,7 +156,6 @@ export async function POST(
       })
       .eq('id', jobId);
 
-    // Log activity
     await admin.from('report_activity').insert({
       job_id: jobId,
       user_id: user.id,

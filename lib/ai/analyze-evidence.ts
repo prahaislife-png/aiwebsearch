@@ -1,5 +1,3 @@
-import Anthropic from '@anthropic-ai/sdk';
-
 export interface EvidenceAnalysis {
   aiComment: string;
   evidenceBullets: string[];
@@ -42,8 +40,6 @@ export async function analyzeEvidence(params: {
     };
   }
 
-  const client = new Anthropic({ apiKey });
-
   const prompt = `You are an evidence analyst reviewing a web page captured during a company research report.
 
 Company being researched: "${params.companyName}"
@@ -84,13 +80,28 @@ Allowed flags: ${ALLOWED_FLAGS.join(', ')}
 Return ONLY the JSON, no markdown wrapping.`;
 
   try {
-    const response = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 1024,
-      messages: [{ role: 'user', content: prompt }],
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: prompt }],
+      }),
     });
 
-    const text = response.content[0].type === 'text' ? response.content[0].text : '';
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Anthropic API error (${res.status}): ${errText}`);
+    }
+
+    const data = await res.json();
+    const text =
+      data.content?.[0]?.type === 'text' ? data.content[0].text : '';
     const parsed = JSON.parse(text.trim());
 
     return {
