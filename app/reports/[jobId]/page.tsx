@@ -305,16 +305,18 @@ export default function ReportViewerPage() {
             <h2 className="text-lg font-semibold text-foreground mb-4">Summary</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {Object.entries(job.summary_json)
-                .filter(([key]) => !['coverageScore', 'coverageStrength'].includes(key))
+                .filter(([key]) => !['coverageScore', 'coverageStrength', 'evidenceScore', 'evidenceStrength'].includes(key))
                 .map(([key, value]) => (
                 <div key={key} className="flex items-center justify-between rounded-lg border border-card-border p-3">
                   <span className="text-sm text-muted">
                     {key.replace(/([A-Z])/g, ' $1').replace(/^./, (s) => s.toUpperCase())}
                   </span>
                   <span className={`text-sm font-medium ${
+                    value === 'Captured' ? 'text-success' :
+                    value === 'Search evidence only' ? 'text-accent' :
+                    value === 'Not found' ? 'text-error' :
                     value === 'Yes' ? 'text-success' :
                     value === 'No' ? 'text-error' :
-                    value === 'Partial' ? 'text-warning' :
                     'text-muted'
                   }`}>
                     {value}
@@ -346,8 +348,9 @@ export default function ReportViewerPage() {
           <div className="space-y-4 mb-6">
             <h2 className="text-lg font-semibold text-foreground">
               Search Evidence
-              <span className="ml-2 text-sm font-normal text-muted">(from blocked domains - {searchEvidence.length})</span>
+              <span className="ml-2 text-sm font-normal text-muted">({searchEvidence.length})</span>
             </h2>
+            <p className="text-xs text-muted -mt-2">Search snippet evidence only. Direct pages were not captured.</p>
             {searchEvidence.map((item) => (
               <div key={item.id} className="rounded-xl border border-card-border bg-card p-4">
                 <div className="flex items-start justify-between mb-2">
@@ -381,7 +384,7 @@ export default function ReportViewerPage() {
           </div>
         )}
 
-        {/* Attempted Sources (collapsed) */}
+        {/* Attempted Sources (collapsed, max 8) */}
         {failedEvidence.length > 0 && (
           <div className="mb-6">
             <button
@@ -389,11 +392,11 @@ export default function ReportViewerPage() {
               className="flex items-center gap-2 text-sm text-muted hover:text-foreground"
             >
               <span className={`transition-transform ${showAttempted ? 'rotate-90' : ''}`}>&#9656;</span>
-              Attempted Sources ({failedEvidence.length})
+              Attempted Sources ({Math.min(failedEvidence.length, 8)})
             </button>
             {showAttempted && (
               <div className="mt-3 space-y-2">
-                {failedEvidence.map((item) => (
+                {failedEvidence.slice(0, 8).map((item) => (
                   <div key={item.id} className="rounded-lg border border-card-border/50 bg-card/50 p-3">
                     <div className="flex items-center justify-between">
                       <div>
@@ -416,6 +419,11 @@ export default function ReportViewerPage() {
                     )}
                   </div>
                 ))}
+                {failedEvidence.length > 8 && (
+                  <p className="text-xs text-muted mt-2">
+                    and {failedEvidence.length - 8} more low-value failed sources hidden
+                  </p>
+                )}
               </div>
             )}
           </div>

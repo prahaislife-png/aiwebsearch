@@ -107,7 +107,7 @@ export async function GET(
     if (job.summary_json) {
       doc.setFontSize(9);
       const summaryEntries = Object.entries(job.summary_json as Record<string, string>)
-        .filter(([key]) => !['coverageScore', 'coverageStrength'].includes(key));
+        .filter(([key]) => !['coverageScore', 'coverageStrength', 'evidenceScore', 'evidenceStrength'].includes(key));
       for (const [key, value] of summaryEntries) {
         addPageIfNeeded(7);
         const label = key.replace(/([A-Z])/g, ' $1').replace(/^./, (s) => s.toUpperCase());
@@ -243,26 +243,28 @@ export async function GET(
       }
     }
 
-    // Attempted Sources
+    // Attempted Sources (max 8)
     if (failedEvidence.length > 0) {
       addPageIfNeeded(15);
       doc.setFontSize(13);
       doc.setTextColor(100, 116, 139);
-      doc.text('Attempted Sources (Failed)', margin, y);
+      doc.text(`Attempted Sources (${Math.min(failedEvidence.length, 8)} shown)`, margin, y);
       y += 8;
 
       doc.setFontSize(8);
-      for (const item of failedEvidence) {
+      const shownFailed = failedEvidence.slice(0, 8);
+      for (const item of shownFailed) {
         addPageIfNeeded(12);
         doc.setTextColor(100, 116, 139);
-        doc.text(`• ${item.section_title}: ${item.source_url}`, margin + 3, y);
-        y += 4;
-        if (item.error_message) {
-          doc.setTextColor(180, 80, 80);
-          doc.text(`  ${item.error_message}`, margin + 5, y);
-          y += 4;
-        }
-        y += 2;
+        const failedLine = doc.splitTextToSize(`• ${item.section_title}: ${item.source_url}`, contentWidth - 5);
+        doc.text(failedLine, margin + 3, y);
+        y += failedLine.length * 4 + 2;
+      }
+      if (failedEvidence.length > 8) {
+        addPageIfNeeded(7);
+        doc.setTextColor(100, 116, 139);
+        doc.text(`... and ${failedEvidence.length - 8} more low-value failed sources hidden`, margin + 3, y);
+        y += 5;
       }
     }
 

@@ -8,12 +8,12 @@ interface EvidenceItem {
 }
 
 export interface ReportSummary {
-  officialWebsite: 'Yes' | 'No' | 'Partial';
-  companyActivity: 'Yes' | 'No' | 'Partial';
-  contactAddress: 'Yes' | 'No' | 'Partial';
-  publicRegistry: 'Yes' | 'No' | 'Partial';
-  managementHistory: 'Yes' | 'No' | 'Partial';
-  ownershipGroup: 'Yes' | 'No' | 'Partial' | 'Not applicable';
+  officialWebsite: string;
+  companyActivity: string;
+  contactAddress: string;
+  publicRegistry: string;
+  managementHistory: string;
+  ownershipGroup: string;
   manualReviewNeeded: 'Yes' | 'No';
   evidenceScore: number;
   evidenceStrength: string;
@@ -25,17 +25,17 @@ export function generateSummary(
 ): { summary: ReportSummary; finalComment: string; coverage: CoverageSummary } {
   const coverage = buildCoverageSummary(evidenceItems);
 
-  const statusToVerdict = (sectionKeys: string[]): 'Yes' | 'No' | 'Partial' => {
+  const statusForSection = (sectionKeys: string[]): string => {
     const items = evidenceItems.filter((e) => sectionKeys.includes(e.section_key));
     const captured = items.filter((e) => e.capture_status === 'captured');
     const searchOnly = items.filter((e) => e.capture_status === 'search_only');
 
     if (captured.length > 0) {
       const hasHigh = captured.some((e) => e.confidence === 'High');
-      return hasHigh ? 'Yes' : 'Partial';
+      return hasHigh ? 'Captured' : 'Captured';
     }
-    if (searchOnly.length > 0) return 'Partial';
-    return 'No';
+    if (searchOnly.length > 0) return 'Search evidence only';
+    return 'Not found';
   };
 
   const hasManualReview = evidenceItems.some(
@@ -43,15 +43,15 @@ export function generateSummary(
   );
 
   const summary: ReportSummary = {
-    officialWebsite: statusToVerdict(['official_website']),
-    companyActivity: statusToVerdict(['about_company']),
-    contactAddress: statusToVerdict(['contact_location']),
-    publicRegistry: statusToVerdict(['public_registry']),
-    managementHistory: statusToVerdict(['management_history']),
+    officialWebsite: statusForSection(['official_website']),
+    companyActivity: statusForSection(['about_company']),
+    contactAddress: statusForSection(['contact_location']),
+    publicRegistry: statusForSection(['public_registry']),
+    managementHistory: statusForSection(['management_history']),
     ownershipGroup:
       reportType === 'enhanced' || reportType === 'kyc' || reportType === 'full'
-        ? statusToVerdict(['group_shareholding'])
-        : 'Not applicable',
+        ? statusForSection(['group_shareholding'])
+        : 'Not checked',
     manualReviewNeeded: hasManualReview ? 'Yes' : 'No',
     evidenceScore: coverage.score,
     evidenceStrength: coverage.strength,

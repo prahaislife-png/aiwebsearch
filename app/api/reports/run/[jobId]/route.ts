@@ -6,6 +6,7 @@ import { MockCaptureProvider } from '@/lib/browser-capture/mock-provider';
 import { analyzeEvidence, analyzeSerpSnippet } from '@/lib/ai/analyze-evidence';
 import { generateSummary } from '@/lib/report-summary';
 import { CaptureProvider } from '@/lib/browser-capture/capture-provider';
+import { isRelevantToCompany, isHighValueFailedSource } from '@/lib/relevance';
 import { NextResponse } from 'next/server';
 
 export const maxDuration = 300;
@@ -45,7 +46,15 @@ export async function POST(
       return NextResponse.json({ error: 'Job not found' }, { status: 404 });
     }
 
-    // Step 1: Discover sources via Google SERP
+    // Detect official domain
+    let officialDomain: string | null = null;
+    if (job.official_website_input) {
+      try {
+        officialDomain = new URL(job.official_website_input).hostname.replace(/^www\./, '');
+      } catch { /* ignore */ }
+    }
+
+    // Step 1: Discover sources via Google SERP (with relevance filtering built in)
     await admin
       .from('web_search_jobs')
       .update({ status: 'discovering_sources', progress_step: 'Searching Google for public sources...' })
@@ -58,9 +67,12 @@ export async function POST(
       reportType: job.report_type,
     });
 
-    console.log(`[RunJob] Discovered ${sources.length} sources (${sources.filter(s => s.shouldCapture).length} capturable)`);
+    const capturableSources = sources.filter((s) => s.shouldCapture);
+    const serpOnlySources = sources.filter((s) => !s.shouldCapture);
 
-    // Store all discovered sources
+    console.log(`[RunJob] Discovered ${sources.length} relevant sources (${capturableSources.length} capturable, ${serpOnlySources.length} SERP-only)`);
+
+    // Store discovered sources
     for (const source of sources) {
       await admin.from('web_search_sources').insert({
         job_id: jobId,
@@ -73,10 +85,7 @@ export async function POST(
       });
     }
 
-    // Step 2: Capture pages (only capturable URLs)
-    const capturableSources = sources.filter((s) => s.shouldCapture);
-    const serpOnlySources = sources.filter((s) => !s.shouldCapture);
-
+    // Step 2: Capture pages (only capturable URLs that passed relevance)
     await admin
       .from('web_search_jobs')
       .update({ status: 'capturing_screenshots', progress_step: `Capturing ${capturableSources.length} pages...` })
@@ -94,17 +103,39 @@ export async function POST(
       })),
     });
 
-    // Step 3: Analyze captured evidence
+    // Step 3: Analyze captured evidence with post-capture relevance validation
     await admin
       .from('web_search_jobs')
       .update({ status: 'analyzing', progress_step: 'Analyzing captured evidence...' })
       .eq('id', jobId);
 
-    // Analyze captured pages
+    let capturedCount = 0;
+    let rejectedCount = 0;
+    let failedHighValue = 0;
+    let failedHidden = 0;
+
     for (const capture of captureResults) {
-      let analysis = null;
       if (capture.status === 'success') {
-        analysis = await analyzeEvidence({
+        // Post-capture relevance check on extracted text
+        const postRelevance = isRelevantToCompany(
+          {
+            url: capture.sourceUrl,
+            title: capture.pageTitle || '',
+            snippet: '',
+            extractedText: capture.extractedText,
+          },
+          job.company_name,
+          officialDomain
+        );
+
+        if (!postRelevance.relevant) {
+          rejectedCount++;
+          console.log(`[RunJob] REJECTED_IRRELEVANT_SOURCE (post-capture): ${capture.sourceUrl} - ${postRelevance.reason}`);
+          continue;
+        }
+
+        // Analyze the captured page
+        const analysis = await analyzeEvidence({
           sectionKey: capture.sectionKey,
           sectionTitle: capture.sectionTitle,
           sourceUrl: capture.sourceUrl,
@@ -112,35 +143,104 @@ export async function POST(
           extractedText: capture.extractedText,
           companyName: job.company_name,
         });
+
+        // Check if AI analysis says the page is irrelevant
+        const aiComment = (analysis.aiComment || '').toLowerCase();
+        const isAiRejected =
+          aiComment.includes('does not contain') ||
+          aiComment.includes('not mentioned') ||
+          aiComment.includes('not related to') ||
+          aiComment.includes('no information about') ||
+          (analysis.flags.includes('manual_review_needed') && !analysis.flags.some(f =>
+            f === 'website_identified' || f === 'company_activity_found' ||
+            f === 'operational_address_found' || f === 'registry_found' ||
+            f === 'management_found' || f === 'parent_company_found'
+          ));
+
+        if (isAiRejected && analysis.confidence === 'Low') {
+          rejectedCount++;
+          console.log(`[RunJob] REJECTED_IRRELEVANT_SOURCE (AI analysis): ${capture.sourceUrl}`);
+          continue;
+        }
+
+        const { data: sourceRecord } = await admin
+          .from('web_search_sources')
+          .select('id')
+          .eq('job_id', jobId)
+          .eq('source_url', capture.sourceUrl)
+          .single();
+
+        await admin.from('web_search_evidence').insert({
+          job_id: jobId,
+          source_id: sourceRecord?.id || null,
+          section_key: capture.sectionKey,
+          section_title: capture.sectionTitle,
+          source_url: capture.sourceUrl,
+          page_title: capture.pageTitle,
+          screenshot_url: capture.screenshotUrl || null,
+          extracted_text: capture.extractedText || null,
+          ai_comment: analysis.aiComment,
+          evidence_bullets: analysis.evidenceBullets,
+          confidence: analysis.confidence,
+          flags: analysis.flags,
+          capture_status: 'captured',
+          error_message: null,
+          captured_at: capture.capturedAt,
+        });
+
+        capturedCount++;
+        console.log(`[RunJob] SOURCE_ACCEPTED_CAPTURED_EVIDENCE: ${capture.sourceUrl}`);
+      } else {
+        // Failed capture — check if it's high-value
+        const matchingSource = capturableSources.find((s) => s.sourceUrl === capture.sourceUrl);
+        const isHighValue = isHighValueFailedSource(
+          {
+            url: capture.sourceUrl,
+            title: matchingSource?.reason.replace('Google SERP: ', '') || '',
+            snippet: matchingSource?.snippet || '',
+            sectionKey: capture.sectionKey,
+            category: matchingSource?.category,
+          },
+          job.company_name,
+          officialDomain
+        );
+
+        if (isHighValue) {
+          failedHighValue++;
+          console.log(`[RunJob] FAILED_SOURCE_SHOWN_HIGH_VALUE: ${capture.sourceUrl}`);
+
+          const { data: sourceRecord } = await admin
+            .from('web_search_sources')
+            .select('id')
+            .eq('job_id', jobId)
+            .eq('source_url', capture.sourceUrl)
+            .single();
+
+          await admin.from('web_search_evidence').insert({
+            job_id: jobId,
+            source_id: sourceRecord?.id || null,
+            section_key: capture.sectionKey,
+            section_title: capture.sectionTitle,
+            source_url: capture.sourceUrl,
+            page_title: matchingSource?.reason.replace('Google SERP: ', '') || null,
+            screenshot_url: null,
+            extracted_text: null,
+            ai_comment: null,
+            evidence_bullets: null,
+            confidence: null,
+            flags: null,
+            capture_status: 'failed',
+            error_message: capture.errorMessage || 'Page was not captured',
+            captured_at: capture.capturedAt,
+          });
+        } else {
+          failedHidden++;
+          console.log(`[RunJob] FAILED_SOURCE_HIDDEN: ${capture.sourceUrl}`);
+        }
       }
-
-      const { data: sourceRecord } = await admin
-        .from('web_search_sources')
-        .select('id')
-        .eq('job_id', jobId)
-        .eq('source_url', capture.sourceUrl)
-        .single();
-
-      await admin.from('web_search_evidence').insert({
-        job_id: jobId,
-        source_id: sourceRecord?.id || null,
-        section_key: capture.sectionKey,
-        section_title: capture.sectionTitle,
-        source_url: capture.sourceUrl,
-        page_title: capture.pageTitle,
-        screenshot_url: capture.screenshotUrl || null,
-        extracted_text: capture.extractedText || null,
-        ai_comment: analysis?.aiComment || null,
-        evidence_bullets: analysis?.evidenceBullets || null,
-        confidence: analysis?.confidence || null,
-        flags: analysis?.flags || null,
-        capture_status: capture.status === 'success' ? 'captured' : 'failed',
-        error_message: capture.errorMessage || null,
-        captured_at: capture.capturedAt,
-      });
     }
 
-    // Analyze SERP-only sources (snippets from blocked domains)
+    // Analyze SERP-only sources (snippets from blocked but relevant domains)
     for (const serpSource of serpOnlySources) {
       if (!serpSource.snippet) continue;
 
@@ -177,6 +277,8 @@ export async function POST(
         error_message: null,
         captured_at: new Date().toISOString(),
       });
+
+      console.log(`[RunJob] SOURCE_ACCEPTED_SEARCH_EVIDENCE: ${serpSource.sourceUrl}`);
     }
 
     // Step 4: Generate summary with coverage scoring
@@ -205,7 +307,7 @@ export async function POST(
       job_id: jobId,
       user_id: user.id,
       activity_type: 'job_completed',
-      message: `Report completed: ${captureResults.filter(r => r.status === 'success').length} pages captured, ${serpOnlySources.length} SERP-only sources, score ${coverage.score}/100`,
+      message: `Report completed: ${capturedCount} captured, ${serpOnlySources.length} SERP, ${failedHighValue} high-value failed, ${failedHidden} hidden, ${rejectedCount} rejected irrelevant. Score ${coverage.score}/100`,
     });
 
     return NextResponse.json({ success: true, jobId });
