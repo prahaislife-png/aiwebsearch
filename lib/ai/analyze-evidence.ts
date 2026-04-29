@@ -20,6 +20,8 @@ const ALLOWED_FLAGS = [
   'source_blocked',
   'manual_review_needed',
   'no_issue_found',
+  'adverse_found',
+  'sanction_match',
 ];
 
 export async function analyzeEvidence(params: {
@@ -59,13 +61,15 @@ Based on this source, analyze:
 4. Does it show corporate registration or registry information?
 5. Does it mention management, founders, or leadership?
 6. Does it mention parent company, shareholding, or government connection?
-7. Are there items needing manual review?
+7. Are there any adverse findings (lawsuits, fraud, sanctions)?
+8. Are there items needing manual review?
 
 RULES:
 - Do NOT invent facts not present in the text.
 - Do NOT say "verified" unless the page clearly supports it.
 - Use cautious language: "appears to show", "indicates", "mentions", "no clear evidence found".
 - Every statement must be grounded in the source URL or extracted text.
+- Extract specific facts when present: names, addresses, registration numbers, dates.
 
 Respond in this exact JSON format:
 {
@@ -107,7 +111,7 @@ Return ONLY the JSON, no markdown wrapping.`;
     return {
       aiComment: parsed.aiComment || 'Analysis completed.',
       evidenceBullets: Array.isArray(parsed.evidenceBullets)
-        ? parsed.evidenceBullets.slice(0, 4)
+        ? parsed.evidenceBullets.slice(0, 5)
         : [],
       confidence: ['High', 'Medium', 'Low'].includes(parsed.confidence)
         ? parsed.confidence
@@ -123,6 +127,95 @@ Return ONLY the JSON, no markdown wrapping.`;
       evidenceBullets: ['Automated analysis encountered an error.'],
       confidence: 'Low',
       flags: ['manual_review_needed'],
+    };
+  }
+}
+
+export async function analyzeSerpSnippet(params: {
+  sectionKey: string;
+  sectionTitle: string;
+  sourceUrl: string;
+  title: string;
+  snippet: string;
+  companyName: string;
+}): Promise<EvidenceAnalysis> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return {
+      aiComment: `Search result from ${params.sourceUrl}: ${params.snippet}`,
+      evidenceBullets: [params.snippet].filter(Boolean),
+      confidence: 'Low',
+      flags: ['source_blocked'],
+    };
+  }
+
+  const prompt = `You are analyzing a Google search result snippet for a company research report. The full page was not captured (blocked domain), so analyze ONLY the snippet text.
+
+Company: "${params.companyName}"
+Section: "${params.sectionTitle}"
+Source URL: ${params.sourceUrl}
+Search Result Title: ${params.title}
+Snippet: ${params.snippet}
+
+Based ONLY on this snippet:
+1. What factual information can be extracted about the company?
+2. Does it mention address, registration, management, or activity?
+3. Is there any adverse/negative information?
+
+RULES:
+- ONLY state facts directly present in the snippet - do NOT infer or assume.
+- Confidence must be "Low" since this is only a search snippet, not a full page.
+- Keep aiComment to 1-2 sentences.
+
+Respond in this exact JSON format:
+{
+  "aiComment": "Brief summary of what the snippet shows.",
+  "evidenceBullets": ["fact 1", "fact 2"],
+  "confidence": "Low",
+  "flags": ["flag1"]
+}
+
+Allowed flags: ${ALLOWED_FLAGS.join(', ')}
+
+Return ONLY the JSON, no markdown wrapping.`;
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 512,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
+
+    if (!res.ok) throw new Error(`Anthropic API error (${res.status})`);
+
+    const data = await res.json();
+    const text = data.content?.[0]?.type === 'text' ? data.content[0].text : '';
+    const parsed = JSON.parse(text.trim());
+
+    return {
+      aiComment: parsed.aiComment || `Search snippet from ${params.title}`,
+      evidenceBullets: Array.isArray(parsed.evidenceBullets)
+        ? parsed.evidenceBullets.slice(0, 3)
+        : [params.snippet],
+      confidence: 'Low',
+      flags: Array.isArray(parsed.flags)
+        ? parsed.flags.filter((f: string) => ALLOWED_FLAGS.includes(f))
+        : ['source_blocked'],
+    };
+  } catch {
+    return {
+      aiComment: `Search result: ${params.title}. ${params.snippet}`,
+      evidenceBullets: [params.snippet].filter(Boolean),
+      confidence: 'Low',
+      flags: ['source_blocked'],
     };
   }
 }

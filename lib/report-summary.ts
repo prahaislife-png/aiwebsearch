@@ -1,3 +1,5 @@
+import { buildCoverageSummary, generateFinalSummary, CoverageSummary } from './coverage';
+
 interface EvidenceItem {
   section_key: string;
   capture_status: string;
@@ -13,46 +15,49 @@ export interface ReportSummary {
   managementHistory: 'Yes' | 'No' | 'Partial';
   ownershipGroup: 'Yes' | 'No' | 'Partial' | 'Not applicable';
   manualReviewNeeded: 'Yes' | 'No';
+  evidenceScore: number;
+  evidenceStrength: string;
 }
 
 export function generateSummary(
   evidenceItems: EvidenceItem[],
   reportType: string
-): { summary: ReportSummary; finalComment: string } {
-  const checkSection = (sectionKey: string): 'Yes' | 'No' | 'Partial' => {
-    const items = evidenceItems.filter(
-      (e) => e.section_key === sectionKey && e.capture_status === 'captured'
-    );
-    if (items.length === 0) return 'No';
-    const hasHighConfidence = items.some((e) => e.confidence === 'High');
-    return hasHighConfidence ? 'Yes' : 'Partial';
+): { summary: ReportSummary; finalComment: string; coverage: CoverageSummary } {
+  const coverage = buildCoverageSummary(evidenceItems);
+
+  const statusToVerdict = (sectionKeys: string[]): 'Yes' | 'No' | 'Partial' => {
+    const items = evidenceItems.filter((e) => sectionKeys.includes(e.section_key));
+    const captured = items.filter((e) => e.capture_status === 'captured');
+    const searchOnly = items.filter((e) => e.capture_status === 'search_only');
+
+    if (captured.length > 0) {
+      const hasHigh = captured.some((e) => e.confidence === 'High');
+      return hasHigh ? 'Yes' : 'Partial';
+    }
+    if (searchOnly.length > 0) return 'Partial';
+    return 'No';
   };
 
   const hasManualReview = evidenceItems.some(
-    (e) =>
-      e.flags &&
-      Array.isArray(e.flags) &&
-      e.flags.includes('manual_review_needed')
+    (e) => e.flags && Array.isArray(e.flags) && e.flags.includes('manual_review_needed')
   );
 
   const summary: ReportSummary = {
-    officialWebsite: checkSection('official_website'),
-    companyActivity: checkSection('about_company'),
-    contactAddress: checkSection('contact_location'),
-    publicRegistry: checkSection('public_registry'),
-    managementHistory: checkSection('management_history'),
+    officialWebsite: statusToVerdict(['official_website']),
+    companyActivity: statusToVerdict(['about_company']),
+    contactAddress: statusToVerdict(['contact_location']),
+    publicRegistry: statusToVerdict(['public_registry']),
+    managementHistory: statusToVerdict(['management_history']),
     ownershipGroup:
-      reportType === 'enhanced'
-        ? checkSection('group_shareholding')
+      reportType === 'enhanced' || reportType === 'kyc' || reportType === 'full'
+        ? statusToVerdict(['group_shareholding'])
         : 'Not applicable',
     manualReviewNeeded: hasManualReview ? 'Yes' : 'No',
+    evidenceScore: coverage.score,
+    evidenceStrength: coverage.strength,
   };
 
-  const finalComment = `Public web sources were captured for the company. The report includes evidence from the official website, activity/about page, contact/location page, and public registry or ownership sources where available. ${
-    hasManualReview
-      ? 'Some areas may require manual review where sources were unavailable, blocked, or unclear.'
-      : 'No significant issues were identified requiring manual review.'
-  }`;
+  const finalComment = generateFinalSummary(coverage);
 
-  return { summary, finalComment };
+  return { summary, finalComment, coverage };
 }

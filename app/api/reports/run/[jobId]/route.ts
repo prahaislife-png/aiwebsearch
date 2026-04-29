@@ -3,7 +3,7 @@ import { createClient } from '@/lib/supabase/server';
 import { discoverCompanySources } from '@/lib/source-discovery';
 import { ApifyCaptureProvider } from '@/lib/browser-capture/apify-provider';
 import { MockCaptureProvider } from '@/lib/browser-capture/mock-provider';
-import { analyzeEvidence } from '@/lib/ai/analyze-evidence';
+import { analyzeEvidence, analyzeSerpSnippet } from '@/lib/ai/analyze-evidence';
 import { generateSummary } from '@/lib/report-summary';
 import { CaptureProvider } from '@/lib/browser-capture/capture-provider';
 import { NextResponse } from 'next/server';
@@ -45,10 +45,10 @@ export async function POST(
       return NextResponse.json({ error: 'Job not found' }, { status: 404 });
     }
 
-    // Step 1: Discover sources
+    // Step 1: Discover sources via Google SERP
     await admin
       .from('web_search_jobs')
-      .update({ status: 'discovering_sources', progress_step: 'Discovering public sources...' })
+      .update({ status: 'discovering_sources', progress_step: 'Searching Google for public sources...' })
       .eq('id', jobId);
 
     const sources = await discoverCompanySources({
@@ -58,7 +58,9 @@ export async function POST(
       reportType: job.report_type,
     });
 
-    // Store discovered sources
+    console.log(`[RunJob] Discovered ${sources.length} sources (${sources.filter(s => s.shouldCapture).length} capturable)`);
+
+    // Store all discovered sources
     for (const source of sources) {
       await admin.from('web_search_sources').insert({
         job_id: jobId,
@@ -67,14 +69,17 @@ export async function POST(
         source_url: source.sourceUrl,
         source_type: source.sourceType,
         discovery_method: source.reason,
-        selected: true,
+        selected: source.shouldCapture,
       });
     }
 
-    // Step 2: Capture screenshots
+    // Step 2: Capture pages (only capturable URLs)
+    const capturableSources = sources.filter((s) => s.shouldCapture);
+    const serpOnlySources = sources.filter((s) => !s.shouldCapture);
+
     await admin
       .from('web_search_jobs')
-      .update({ status: 'capturing_screenshots', progress_step: 'Capturing screenshots...' })
+      .update({ status: 'capturing_screenshots', progress_step: `Capturing ${capturableSources.length} pages...` })
       .eq('id', jobId);
 
     const captureProvider = getCaptureProvider();
@@ -82,19 +87,20 @@ export async function POST(
       jobId,
       companyName: job.company_name,
       country: job.country,
-      urls: sources.map((s) => ({
+      urls: capturableSources.map((s) => ({
         sectionKey: s.sectionKey,
         sectionTitle: s.sectionTitle,
         url: s.sourceUrl,
       })),
     });
 
-    // Step 3: Analyze evidence
+    // Step 3: Analyze captured evidence
     await admin
       .from('web_search_jobs')
       .update({ status: 'analyzing', progress_step: 'Analyzing captured evidence...' })
       .eq('id', jobId);
 
+    // Analyze captured pages
     for (const capture of captureResults) {
       let analysis = null;
       if (capture.status === 'success') {
@@ -134,13 +140,52 @@ export async function POST(
       });
     }
 
-    // Step 4: Generate summary
+    // Analyze SERP-only sources (snippets from blocked domains)
+    for (const serpSource of serpOnlySources) {
+      if (!serpSource.snippet) continue;
+
+      const analysis = await analyzeSerpSnippet({
+        sectionKey: serpSource.sectionKey,
+        sectionTitle: serpSource.sectionTitle,
+        sourceUrl: serpSource.sourceUrl,
+        title: serpSource.reason.replace('Google SERP: ', ''),
+        snippet: serpSource.snippet,
+        companyName: job.company_name,
+      });
+
+      const { data: sourceRecord } = await admin
+        .from('web_search_sources')
+        .select('id')
+        .eq('job_id', jobId)
+        .eq('source_url', serpSource.sourceUrl)
+        .single();
+
+      await admin.from('web_search_evidence').insert({
+        job_id: jobId,
+        source_id: sourceRecord?.id || null,
+        section_key: serpSource.sectionKey,
+        section_title: serpSource.sectionTitle,
+        source_url: serpSource.sourceUrl,
+        page_title: serpSource.reason.replace('Google SERP: ', ''),
+        screenshot_url: null,
+        extracted_text: serpSource.snippet,
+        ai_comment: analysis.aiComment,
+        evidence_bullets: analysis.evidenceBullets,
+        confidence: analysis.confidence,
+        flags: analysis.flags,
+        capture_status: 'search_only',
+        error_message: null,
+        captured_at: new Date().toISOString(),
+      });
+    }
+
+    // Step 4: Generate summary with coverage scoring
     const { data: allEvidence } = await admin
       .from('web_search_evidence')
       .select('section_key, capture_status, confidence, flags')
       .eq('job_id', jobId);
 
-    const { summary, finalComment } = generateSummary(
+    const { summary, finalComment, coverage } = generateSummary(
       allEvidence || [],
       job.report_type
     );
@@ -150,7 +195,7 @@ export async function POST(
       .update({
         status: 'completed',
         progress_step: null,
-        summary_json: summary,
+        summary_json: { ...summary, coverageScore: String(coverage.score), coverageStrength: coverage.strength },
         final_comment: finalComment,
         completed_at: new Date().toISOString(),
       })
@@ -160,7 +205,7 @@ export async function POST(
       job_id: jobId,
       user_id: user.id,
       activity_type: 'job_completed',
-      message: `Report completed with ${captureResults.length} sources captured`,
+      message: `Report completed: ${captureResults.filter(r => r.status === 'success').length} pages captured, ${serpOnlySources.length} SERP-only sources, score ${coverage.score}/100`,
     });
 
     return NextResponse.json({ success: true, jobId });

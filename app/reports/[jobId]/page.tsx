@@ -49,6 +49,7 @@ export default function ReportViewerPage() {
   const [addUrl, setAddUrl] = useState('');
   const [addSection, setAddSection] = useState('official_website');
   const [addingSource, setAddingSource] = useState(false);
+  const [showAttempted, setShowAttempted] = useState(false);
 
   const loadReport = useCallback(async () => {
     const res = await fetch(`/api/reports/${jobId}`);
@@ -64,7 +65,6 @@ export default function ReportViewerPage() {
     loadReport();
   }, [loadReport]);
 
-  // Auto-trigger run when job is queued
   useEffect(() => {
     if (job && job.status === 'queued' && !running) {
       handleRun();
@@ -83,7 +83,6 @@ export default function ReportViewerPage() {
     setRunning(true);
     try {
       fetch(`/api/reports/run/${jobId}`, { method: 'POST' }).catch(() => {});
-      // Don't wait for the response - just start polling
       setTimeout(loadReport, 2000);
     } catch {
       alert('Failed to run report');
@@ -141,6 +140,15 @@ export default function ReportViewerPage() {
 
   const currentStepIndex = STEPS.indexOf(job.status);
 
+  // Separate evidence by type
+  const capturedEvidence = evidence.filter((e) => e.capture_status === 'captured');
+  const searchEvidence = evidence.filter((e) => e.capture_status === 'search_only');
+  const failedEvidence = evidence.filter((e) => e.capture_status === 'failed');
+
+  // Coverage data from summary_json
+  const coverageScore = job.summary_json?.coverageScore ? parseInt(job.summary_json.coverageScore) : null;
+  const coverageStrength = job.summary_json?.coverageStrength || null;
+
   return (
     <div className="min-h-screen p-4 md:p-8">
       <div className="mx-auto max-w-5xl">
@@ -185,8 +193,8 @@ export default function ReportViewerPage() {
           </div>
         </div>
 
-        {/* Status badge */}
-        <div className="mb-6">
+        {/* Status badge + Evidence Score */}
+        <div className="mb-6 flex items-center gap-3">
           <span className={`rounded-full px-3 py-1 text-xs font-medium ${
             job.status === 'completed' ? 'bg-success/20 text-success' :
             job.status === 'failed' ? 'bg-error/20 text-error' :
@@ -194,8 +202,17 @@ export default function ReportViewerPage() {
           }`}>
             {job.status.replace(/_/g, ' ')}
           </span>
+          {coverageScore !== null && (
+            <span className={`rounded-full px-3 py-1 text-xs font-medium ${
+              coverageStrength === 'Strong' ? 'bg-success/20 text-success' :
+              coverageStrength === 'Moderate' ? 'bg-accent/20 text-accent' :
+              'bg-error/20 text-error'
+            }`}>
+              Score: {coverageScore}/100 ({coverageStrength})
+            </span>
+          )}
           {job.progress_step && (
-            <span className="ml-3 text-sm text-muted">{job.progress_step}</span>
+            <span className="text-sm text-muted">{job.progress_step}</span>
           )}
           {job.error_message && (
             <p className="mt-2 text-sm text-error">{job.error_message}</p>
@@ -229,12 +246,67 @@ export default function ReportViewerPage() {
           </div>
         </div>
 
+        {/* Investigation Coverage */}
+        {job.status === 'completed' && evidence.length > 0 && (
+          <div className="rounded-xl border border-card-border bg-card p-6 mb-6">
+            <h2 className="text-lg font-semibold text-foreground mb-4">Investigation Coverage</h2>
+            <div className="flex flex-wrap gap-2">
+              {(() => {
+                const categories = [
+                  { key: 'official_website', label: 'Website' },
+                  { key: 'about_company', label: 'Activity' },
+                  { key: 'contact_location', label: 'Address' },
+                  { key: 'public_registry', label: 'Registry' },
+                  { key: 'management_history', label: 'Management' },
+                  { key: 'group_shareholding', label: 'Ownership' },
+                  { key: 'adverse_media', label: 'Adverse Media' },
+                  { key: 'sanctions_watchlist', label: 'Sanctions' },
+                ];
+
+                return categories.map(({ key, label }) => {
+                  const items = evidence.filter((e) => e.section_key === key);
+                  const hasCaptured = items.some((e) => e.capture_status === 'captured');
+                  const hasSearch = items.some((e) => e.capture_status === 'search_only');
+                  const hasFailed = items.some((e) => e.capture_status === 'failed');
+
+                  let status: 'found' | 'partial' | 'not_found' | 'blocked' = 'not_found';
+                  if (hasCaptured) status = 'found';
+                  else if (hasSearch) status = 'partial';
+                  else if (hasFailed) status = 'blocked';
+
+                  const colors = {
+                    found: 'bg-success/20 text-success border-success/30',
+                    partial: 'bg-accent/20 text-accent border-accent/30',
+                    blocked: 'bg-error/10 text-error border-error/20',
+                    not_found: 'bg-card-border/50 text-muted border-card-border',
+                  };
+
+                  const icons = { found: '●', partial: '◐', blocked: '○', not_found: '○' };
+
+                  return (
+                    <span key={key} className={`rounded-full border px-3 py-1 text-xs font-medium ${colors[status]}`}>
+                      {icons[status]} {label}
+                    </span>
+                  );
+                });
+              })()}
+            </div>
+            <div className="mt-3 flex items-center gap-4 text-xs text-muted">
+              <span>● Found</span>
+              <span>◐ Partial (SERP only)</span>
+              <span>○ Not found</span>
+            </div>
+          </div>
+        )}
+
         {/* Summary */}
         {job.summary_json && (
           <div className="rounded-xl border border-card-border bg-card p-6 mb-6">
             <h2 className="text-lg font-semibold text-foreground mb-4">Summary</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {Object.entries(job.summary_json).map(([key, value]) => (
+              {Object.entries(job.summary_json)
+                .filter(([key]) => !['coverageScore', 'coverageStrength'].includes(key))
+                .map(([key, value]) => (
                 <div key={key} className="flex items-center justify-between rounded-lg border border-card-border p-3">
                   <span className="text-sm text-muted">
                     {key.replace(/([A-Z])/g, ' $1').replace(/^./, (s) => s.toUpperCase())}
@@ -256,15 +328,31 @@ export default function ReportViewerPage() {
           </div>
         )}
 
-        {/* Evidence Sections */}
-        {evidence.length > 0 && (
-          <div className="space-y-4">
-            <h2 className="text-lg font-semibold text-foreground">Evidence</h2>
-            {evidence.map((item) => (
-              <div key={item.id} className="rounded-xl border border-card-border bg-card p-5">
-                <div className="flex items-start justify-between mb-3">
+        {/* Captured Evidence */}
+        {capturedEvidence.length > 0 && (
+          <div className="space-y-4 mb-6">
+            <h2 className="text-lg font-semibold text-foreground">
+              Captured Evidence
+              <span className="ml-2 text-sm font-normal text-muted">({capturedEvidence.length})</span>
+            </h2>
+            {capturedEvidence.map((item) => (
+              <EvidenceCard key={item.id} item={item} />
+            ))}
+          </div>
+        )}
+
+        {/* Search Evidence (SERP-only) */}
+        {searchEvidence.length > 0 && (
+          <div className="space-y-4 mb-6">
+            <h2 className="text-lg font-semibold text-foreground">
+              Search Evidence
+              <span className="ml-2 text-sm font-normal text-muted">(from blocked domains - {searchEvidence.length})</span>
+            </h2>
+            {searchEvidence.map((item) => (
+              <div key={item.id} className="rounded-xl border border-card-border bg-card p-4">
+                <div className="flex items-start justify-between mb-2">
                   <div>
-                    <h3 className="font-medium text-accent">{item.section_title}</h3>
+                    <h3 className="font-medium text-accent text-sm">{item.section_title}</h3>
                     <a
                       href={item.source_url}
                       target="_blank"
@@ -274,67 +362,62 @@ export default function ReportViewerPage() {
                       {item.source_url}
                     </a>
                   </div>
-                  <div className="flex items-center gap-2">
-                    {item.confidence && (
-                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                        item.confidence === 'High' ? 'bg-success/20 text-success' :
-                        item.confidence === 'Medium' ? 'bg-accent/20 text-accent' :
-                        'bg-muted/20 text-muted'
-                      }`}>
-                        {item.confidence}
-                      </span>
-                    )}
-                    <span className={`rounded-full px-2 py-0.5 text-xs ${
-                      item.capture_status === 'captured' ? 'bg-success/10 text-success' : 'bg-error/10 text-error'
-                    }`}>
-                      {item.capture_status}
-                    </span>
-                  </div>
+                  <span className="rounded-full bg-accent/10 px-2 py-0.5 text-xs text-accent">
+                    SERP
+                  </span>
                 </div>
-
-                {item.screenshot_url && (
-                  <div className="mb-3 rounded-lg overflow-hidden border border-card-border">
-                    <img
-                      src={item.screenshot_url}
-                      alt={`Screenshot of ${item.page_title || item.source_url}`}
-                      className="w-full max-h-80 object-cover object-top"
-                    />
-                  </div>
-                )}
-
                 {item.ai_comment && (
                   <p className="text-sm text-foreground mb-2">{item.ai_comment}</p>
                 )}
-
                 {item.evidence_bullets && item.evidence_bullets.length > 0 && (
-                  <ul className="list-disc list-inside text-sm text-muted space-y-1 mb-2">
+                  <ul className="list-disc list-inside text-sm text-muted space-y-1">
                     {item.evidence_bullets.map((bullet, i) => (
                       <li key={i}>{bullet}</li>
                     ))}
                   </ul>
                 )}
-
-                {item.flags && item.flags.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-2">
-                    {item.flags.map((flag) => (
-                      <span key={flag} className="rounded bg-card-border px-2 py-0.5 text-xs text-muted">
-                        {flag.replace(/_/g, ' ')}
-                      </span>
-                    ))}
-                  </div>
-                )}
-
-                {item.captured_at && (
-                  <p className="text-xs text-muted mt-2">
-                    Captured: {new Date(item.captured_at).toLocaleString()}
-                  </p>
-                )}
-
-                {item.error_message && (
-                  <p className="text-xs text-error mt-2">{item.error_message}</p>
-                )}
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Attempted Sources (collapsed) */}
+        {failedEvidence.length > 0 && (
+          <div className="mb-6">
+            <button
+              onClick={() => setShowAttempted(!showAttempted)}
+              className="flex items-center gap-2 text-sm text-muted hover:text-foreground"
+            >
+              <span className={`transition-transform ${showAttempted ? 'rotate-90' : ''}`}>&#9656;</span>
+              Attempted Sources ({failedEvidence.length})
+            </button>
+            {showAttempted && (
+              <div className="mt-3 space-y-2">
+                {failedEvidence.map((item) => (
+                  <div key={item.id} className="rounded-lg border border-card-border/50 bg-card/50 p-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <span className="text-xs text-muted">{item.section_title}</span>
+                        <a
+                          href={item.source_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block text-xs text-muted/70 hover:text-accent break-all"
+                        >
+                          {item.source_url}
+                        </a>
+                      </div>
+                      <span className="rounded-full bg-error/10 px-2 py-0.5 text-xs text-error">
+                        failed
+                      </span>
+                    </div>
+                    {item.error_message && (
+                      <p className="text-xs text-error/70 mt-1">{item.error_message}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -387,6 +470,78 @@ export default function ReportViewerPage() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function EvidenceCard({ item }: { item: EvidenceItem }) {
+  return (
+    <div className="rounded-xl border border-card-border bg-card p-5">
+      <div className="flex items-start justify-between mb-3">
+        <div>
+          <h3 className="font-medium text-accent">{item.section_title}</h3>
+          <a
+            href={item.source_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-muted hover:text-accent break-all"
+          >
+            {item.source_url}
+          </a>
+        </div>
+        <div className="flex items-center gap-2">
+          {item.confidence && (
+            <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+              item.confidence === 'High' ? 'bg-success/20 text-success' :
+              item.confidence === 'Medium' ? 'bg-accent/20 text-accent' :
+              'bg-muted/20 text-muted'
+            }`}>
+              {item.confidence}
+            </span>
+          )}
+          <span className="rounded-full bg-success/10 px-2 py-0.5 text-xs text-success">
+            captured
+          </span>
+        </div>
+      </div>
+
+      {item.screenshot_url && (
+        <div className="mb-3 rounded-lg overflow-hidden border border-card-border">
+          <img
+            src={item.screenshot_url}
+            alt={`Screenshot of ${item.page_title || item.source_url}`}
+            className="w-full max-h-80 object-cover object-top"
+          />
+        </div>
+      )}
+
+      {item.ai_comment && (
+        <p className="text-sm text-foreground mb-2">{item.ai_comment}</p>
+      )}
+
+      {item.evidence_bullets && item.evidence_bullets.length > 0 && (
+        <ul className="list-disc list-inside text-sm text-muted space-y-1 mb-2">
+          {item.evidence_bullets.map((bullet, i) => (
+            <li key={i}>{bullet}</li>
+          ))}
+        </ul>
+      )}
+
+      {item.flags && item.flags.length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-2">
+          {item.flags.map((flag) => (
+            <span key={flag} className="rounded bg-card-border px-2 py-0.5 text-xs text-muted">
+              {flag.replace(/_/g, ' ')}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {item.captured_at && (
+        <p className="text-xs text-muted mt-2">
+          Captured: {new Date(item.captured_at).toLocaleString()}
+        </p>
+      )}
     </div>
   );
 }
