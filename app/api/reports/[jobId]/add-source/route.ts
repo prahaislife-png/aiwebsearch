@@ -2,6 +2,7 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
 import { ApifyCaptureProvider } from '@/lib/browser-capture/apify-provider';
 import { MockCaptureProvider } from '@/lib/browser-capture/mock-provider';
+import { PlaywrightCrawlerProvider } from '@/lib/browser-capture/playwright-provider';
 import { analyzeEvidence } from '@/lib/ai/analyze-evidence';
 import { CaptureProvider } from '@/lib/browser-capture/capture-provider';
 import { NextResponse } from 'next/server';
@@ -9,6 +10,12 @@ import { NextResponse } from 'next/server';
 export const maxDuration = 300;
 
 function getCaptureProvider(): CaptureProvider {
+  if (process.env.ENABLE_DIRECT_PLAYWRIGHT_CRAWLER === 'true') {
+    try {
+      require('playwright');
+      return new PlaywrightCrawlerProvider();
+    } catch { /* fall through */ }
+  }
   if (process.env.APIFY_TOKEN && process.env.APIFY_WEB_SEARCH_ACTOR_ID) {
     return new ApifyCaptureProvider();
   }

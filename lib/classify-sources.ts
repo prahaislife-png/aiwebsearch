@@ -1,15 +1,11 @@
 export type SourceCategory =
-  | 'official_website'
-  | 'contact_address'
-  | 'company_activity'
+  | 'company_identity'
   | 'public_registry'
+  | 'website_activity'
+  | 'operational_address'
   | 'ownership_management'
-  | 'linkedin_profile'
-  | 'third_party_business_profile'
-  | 'adverse_media'
-  | 'legal_regulatory'
-  | 'sanctions_watchlist'
-  | 'search_result_only'
+  | 'corporate_group'
+  | 'government_connections'
   | 'irrelevant';
 
 export interface ClassifiedSource {
@@ -39,25 +35,21 @@ const BLOCKED_DOMAINS = [
 ];
 
 const CATEGORY_TO_SECTION: Record<SourceCategory, { key: string; title: string }> = {
-  official_website: { key: 'official_website', title: 'Official Website / Homepage' },
-  contact_address: { key: 'contact_location', title: 'Contact / Location / Operational Address' },
-  company_activity: { key: 'about_company', title: 'About / Activity / Products / Services' },
-  public_registry: { key: 'public_registry', title: 'Corporate Registry / Public Record' },
-  ownership_management: { key: 'management_history', title: 'History / Founder / Management / Ownership' },
-  linkedin_profile: { key: 'group_shareholding', title: 'Corporate Group / Parent / Shareholding' },
-  third_party_business_profile: { key: 'about_company', title: 'About / Activity / Products / Services' },
-  adverse_media: { key: 'adverse_media', title: 'Adverse Media / Negative News' },
-  legal_regulatory: { key: 'legal_regulatory', title: 'Legal / Regulatory Records' },
-  sanctions_watchlist: { key: 'sanctions_watchlist', title: 'Sanctions / Watchlist Screening' },
-  search_result_only: { key: 'other', title: 'Other / Additional Source' },
+  company_identity: { key: 'company_identity', title: 'Company Identity' },
+  public_registry: { key: 'public_registry', title: 'Public Registry Evidence' },
+  website_activity: { key: 'website_activity', title: 'Website and Business Activity' },
+  operational_address: { key: 'operational_address', title: 'Operational Address' },
+  ownership_management: { key: 'ownership_management', title: 'Ownership / Management' },
+  corporate_group: { key: 'corporate_group', title: 'Corporate Group Information' },
+  government_connections: { key: 'government_connections', title: 'Government Connections' },
   irrelevant: { key: 'irrelevant', title: 'Irrelevant' },
 };
 
 export function normalizeUrl(url: string): string {
   try {
     const u = new URL(url);
-    let host = u.hostname.replace(/^www\./, '');
-    let path = u.pathname.replace(/\/+$/, '').toLowerCase();
+    const host = u.hostname.replace(/^www\./, '');
+    const path = u.pathname.replace(/\/+$/, '').toLowerCase();
     return `${host}${path}`;
   } catch {
     return url.toLowerCase().trim();
@@ -96,43 +88,54 @@ export function classifySearchResult(
 
   if (isJobPosting(title, snippet)) return 'irrelevant';
 
-  if (domain === 'linkedin.com' || domain.endsWith('.linkedin.com')) return 'linkedin_profile';
+  // Government connections
+  const govOwnershipKeywords = ['government owned', 'state owned', 'ministry', 'public sector ownership', 'state enterprise', 'government-controlled'];
+  if (govOwnershipKeywords.some((k) => combined.includes(k))) return 'government_connections';
 
-  if (['dnb.com', 'bloomberg.com', 'zoominfo.com', 'crunchbase.com', 'pitchbook.com'].some((d) => domain === d || domain.endsWith(`.${d}`))) {
-    return 'third_party_business_profile';
-  }
-
-  const registryKeywords = ['secretary of state', 'business entity', 'registry', 'corporation search', 'registered agent', 'filing', 'annual report'];
+  // Public registry
+  const registryKeywords = [
+    'secretary of state', 'business entity', 'registry', 'corporation search',
+    'registered agent', 'filing', 'annual report', 'registration number',
+    'legal entity', 'incorporation', 'company number', 'vat number',
+    'partita iva', 'handelsregister', 'hrb', 'company profile',
+    'rea number', 'share capital', 'camera di commercio',
+  ];
+  const registryDomains = [
+    'opencorporates.com', 'northdata.de', 'firmenwissen.de',
+    'kompany.com', 'unternehmensregister.de', 'infocamere.it',
+    'registroimprese.it', 'companieshouse.gov.uk',
+  ];
   const isGovDomain = domain.endsWith('.gov') || domain.endsWith('.gov.uk') || domain.endsWith('.gc.ca');
-  if (isGovDomain || registryKeywords.some((k) => combined.includes(k))) return 'public_registry';
+  const isRegistryDomain = registryDomains.some((d) => domain === d || domain.endsWith(`.${d}`));
+  if (isGovDomain || isRegistryDomain || registryKeywords.some((k) => combined.includes(k))) return 'public_registry';
 
-  const sanctionsKeywords = ['ofac', 'sanctions list', 'sanctioned', 'sdn list', 'denied persons', 'watchlist'];
-  if (sanctionsKeywords.some((k) => combined.includes(k))) return 'sanctions_watchlist';
+  // Corporate group
+  const groupKeywords = ['parent company', 'subsidiary', 'group structure', 'holding company', 'affiliated', 'corporate group'];
+  if (groupKeywords.some((k) => combined.includes(k))) return 'corporate_group';
 
-  const adverseKeywords = ['lawsuit', 'fraud', 'sanction', 'investigation', 'penalty', 'fine', 'indictment', 'convicted', 'violation'];
-  if (adverseKeywords.some((k) => combined.includes(k))) return 'adverse_media';
-
-  const legalKeywords = ['court', 'docket', 'case number', 'plaintiff', 'defendant', 'ruling', 'regulatory action'];
-  if (legalKeywords.some((k) => combined.includes(k))) return 'legal_regulatory';
-
-  const ownershipKeywords = ['founder', 'ceo', 'management', 'leadership', 'ownership', 'president', 'director', 'board'];
+  // Ownership / management
+  const ownershipKeywords = ['founder', 'ceo', 'management', 'leadership', 'ownership', 'president', 'director', 'board', 'executive'];
   if (ownershipKeywords.some((k) => combined.includes(k))) return 'ownership_management';
 
-  const contactKeywords = ['contact', 'address', 'location', 'office', 'phone', 'directions'];
-  if (contactKeywords.some((k) => combined.includes(k)) || url.toLowerCase().includes('/contact')) return 'contact_address';
+  // Operational address
+  const contactKeywords = ['contact', 'address', 'location', 'office', 'phone', 'directions', 'headquarters'];
+  if (contactKeywords.some((k) => combined.includes(k)) || url.toLowerCase().includes('/contact') || url.toLowerCase().includes('/location')) return 'operational_address';
 
-  const activityKeywords = ['about', 'services', 'products', 'solutions', 'what we do', 'our company'];
-  if (activityKeywords.some((k) => combined.includes(k)) || url.toLowerCase().includes('/about')) return 'company_activity';
+  // Website / activity
+  const activityKeywords = ['about', 'services', 'products', 'solutions', 'what we do', 'our company', 'industries'];
+  if (activityKeywords.some((k) => combined.includes(k)) || url.toLowerCase().includes('/about')) return 'website_activity';
 
+  // Company identity (company's own domain or profile)
   const domainMatchesCompany = companyWords.some((w) => domain.includes(w));
-  if (domainMatchesCompany) return 'official_website';
+  if (domainMatchesCompany) return 'company_identity';
 
-  return 'search_result_only';
-}
+  // LinkedIn / business databases → treat as company identity
+  if (domain === 'linkedin.com' || domain.endsWith('.linkedin.com')) return 'company_identity';
+  if (['dnb.com', 'zoominfo.com', 'crunchbase.com', 'cbinsights.com', 'tracxn.com'].some((d) => domain === d || domain.endsWith(`.${d}`))) {
+    return 'company_identity';
+  }
 
-export function shouldCaptureSource(source: ClassifiedSource): boolean {
-  if (source.category === 'irrelevant') return false;
-  return !isBlockedDomain(source.url);
+  return 'irrelevant';
 }
 
 export function dedupeSources(sources: ClassifiedSource[]): ClassifiedSource[] {
@@ -146,10 +149,9 @@ export function dedupeSources(sources: ClassifiedSource[]): ClassifiedSource[] {
       seen.set(normalized, source);
     } else {
       const priority: SourceCategory[] = [
-        'official_website', 'public_registry', 'ownership_management',
-        'contact_address', 'company_activity', 'adverse_media',
-        'legal_regulatory', 'sanctions_watchlist', 'linkedin_profile',
-        'third_party_business_profile', 'search_result_only', 'irrelevant',
+        'company_identity', 'public_registry', 'operational_address',
+        'website_activity', 'ownership_management', 'corporate_group',
+        'government_connections', 'irrelevant',
       ];
       if (priority.indexOf(source.category) < priority.indexOf(existing.category)) {
         seen.set(normalized, source);

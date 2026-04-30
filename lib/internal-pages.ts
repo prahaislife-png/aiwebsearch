@@ -38,11 +38,11 @@ const CATEGORY_KEYWORDS: Record<InternalPageCategory, string[]> = {
 };
 
 const CATEGORY_TO_SECTION: Record<InternalPageCategory, { key: string; title: string }> = {
-  contact_address: { key: 'contact_location', title: 'Contact / Location / Operational Address' },
-  company_activity: { key: 'about_company', title: 'About / Activity / Products / Services' },
-  management: { key: 'management_history', title: 'History / Founder / Management / Ownership' },
-  legal: { key: 'other', title: 'Legal / Company Identity' },
-  other: { key: 'other', title: 'Other / Additional Source' },
+  contact_address: { key: 'operational_address', title: 'Operational Address' },
+  company_activity: { key: 'website_activity', title: 'Website and Business Activity' },
+  management: { key: 'ownership_management', title: 'Ownership / Management' },
+  legal: { key: 'company_identity', title: 'Company Identity' },
+  other: { key: 'company_identity', title: 'Company Identity' },
 };
 
 const COMMON_PATHS: Record<InternalPageCategory, string[]> = {
@@ -211,4 +211,80 @@ function getCategoryPriority(category: InternalPageCategory): number {
     case 'legal': return 20;
     default: return 10;
   }
+}
+
+export function classifyAndPrioritizeLinks(
+  links: string[],
+  homepageUrl: string,
+  maxPages: number = 6
+): InternalPageCandidate[] {
+  const base = getBaseDomain(homepageUrl);
+  if (!base) return [];
+
+  const candidates: InternalPageCandidate[] = [];
+  const seenPaths = new Set<string>();
+
+  for (const link of links) {
+    try {
+      const u = new URL(link);
+      const linkBase = `${u.protocol}//${u.hostname}`;
+      if (linkBase !== base) continue;
+      if (u.pathname === '/' || u.pathname.length <= 1) continue;
+
+      const path = u.pathname.toLowerCase();
+      if (seenPaths.has(path)) continue;
+      seenPaths.add(path);
+
+      const category = classifyInternalUrl(path);
+      if (category === 'other') continue;
+
+      const section = CATEGORY_TO_SECTION[category];
+      candidates.push({
+        url: `${linkBase}${u.pathname}`.replace(/\/+$/, ''),
+        category,
+        sectionKey: section.key,
+        sectionTitle: section.title,
+        priority: getCategoryPriority(category),
+        source: 'extracted',
+      });
+    } catch { /* skip invalid */ }
+  }
+
+  // Add guessed common paths for missing categories
+  for (const [category, paths] of Object.entries(COMMON_PATHS) as [InternalPageCategory, string[]][]) {
+    if (category === 'other') continue;
+    const hasCategoryPage = candidates.some((c) => c.category === category);
+    if (hasCategoryPage) continue;
+
+    for (const path of paths) {
+      if (seenPaths.has(path)) continue;
+      seenPaths.add(path);
+
+      const section = CATEGORY_TO_SECTION[category];
+      candidates.push({
+        url: `${base}${path}`,
+        category,
+        sectionKey: section.key,
+        sectionTitle: section.title,
+        priority: getCategoryPriority(category) - 5,
+        source: 'guessed',
+      });
+      break;
+    }
+  }
+
+  candidates.sort((a, b) => b.priority - a.priority);
+
+  const result: InternalPageCandidate[] = [];
+  const categoryCounts: Record<string, number> = {};
+
+  for (const candidate of candidates) {
+    const count = categoryCounts[candidate.category] || 0;
+    if (count >= 2) continue;
+    categoryCounts[candidate.category] = count + 1;
+    result.push(candidate);
+    if (result.length >= maxPages) break;
+  }
+
+  return result;
 }

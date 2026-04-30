@@ -1,9 +1,7 @@
-import { SourceCategory } from './classify-sources';
-
 export interface CoverageItem {
   category: string;
   label: string;
-  status: 'Captured' | 'Search evidence only' | 'Not found' | 'Incomplete' | 'Not checked';
+  status: 'Found' | 'Partial' | 'Not found' | 'Not publicly available' | 'Not checked';
   sourceCount: number;
 }
 
@@ -18,145 +16,83 @@ interface EvidenceRow {
   capture_status: string;
   confidence?: string | null;
   flags?: string[] | null;
-  category?: SourceCategory;
 }
 
-const COVERAGE_CATEGORIES: { category: string; label: string; sectionKeys: string[] }[] = [
-  { category: 'official_website', label: 'Official Website', sectionKeys: ['official_website'] },
-  { category: 'company_activity', label: 'Company Activity', sectionKeys: ['about_company'] },
-  { category: 'contact_address', label: 'Address / Contact', sectionKeys: ['contact_location'] },
-  { category: 'public_registry', label: 'Public Registry', sectionKeys: ['public_registry'] },
-  { category: 'ownership_management', label: 'Management / Ownership', sectionKeys: ['management_history'] },
-  { category: 'group_shareholding', label: 'Group / Shareholding', sectionKeys: ['group_shareholding'] },
-  { category: 'adverse_media', label: 'Adverse Media', sectionKeys: ['adverse_media'] },
-  { category: 'legal_regulatory', label: 'Legal / Regulatory', sectionKeys: ['legal_regulatory'] },
-  { category: 'sanctions_watchlist', label: 'Sanctions Check', sectionKeys: ['sanctions_watchlist'] },
+const COVERAGE_CATEGORIES = [
+  { category: 'company_identity', label: 'Company Identity', sectionKeys: ['company_identity'], points: 15 },
+  { category: 'public_registry', label: 'Public Registry', sectionKeys: ['public_registry'], points: 20 },
+  { category: 'website_activity', label: 'Website / Activity', sectionKeys: ['website_activity'], points: 20 },
+  { category: 'operational_address', label: 'Operational Address', sectionKeys: ['operational_address'], points: 20 },
+  { category: 'ownership_management', label: 'Ownership / Management', sectionKeys: ['ownership_management'], points: 10 },
+  { category: 'corporate_group', label: 'Corporate Group', sectionKeys: ['corporate_group'], points: 10 },
+  { category: 'government_connections', label: 'Government Connections', sectionKeys: ['government_connections'], points: 5 },
 ];
 
-export function buildCoverageSummary(evidence: EvidenceRow[]): CoverageSummary {
+export function buildCoverageSummary(evidence: EvidenceRow[], checkedSections?: Set<string>): CoverageSummary {
   const items: CoverageItem[] = COVERAGE_CATEGORIES.map(({ category, label, sectionKeys }) => {
     const matching = evidence.filter((e) => sectionKeys.includes(e.section_key));
     const captured = matching.filter((e) => e.capture_status === 'captured');
     const searchOnly = matching.filter((e) => e.capture_status === 'search_only');
 
-    let status: CoverageItem['status'] = 'Not found';
+    const wasChecked = checkedSections
+      ? sectionKeys.some((k) => checkedSections.has(k))
+      : matching.length > 0;
+
+    let status: CoverageItem['status'] = wasChecked ? 'Not found' : 'Not checked';
     if (captured.length > 0) {
       const hasHigh = captured.some((e) => e.confidence === 'High');
-      status = hasHigh ? 'Captured' : 'Captured';
+      status = hasHigh ? 'Found' : 'Found';
     } else if (searchOnly.length > 0) {
-      status = 'Search evidence only';
+      status = 'Partial';
     }
 
     return { category, label, status, sourceCount: matching.length };
   });
 
-  const score = calculateEvidenceScore(evidence, items);
+  const score = calculateEvidenceScore(items);
   const strength: CoverageSummary['strength'] =
-    score >= 80 ? 'Strong' : score >= 50 ? 'Moderate' : 'Weak';
+    score >= 70 ? 'Strong' : score >= 45 ? 'Moderate' : 'Weak';
 
   return { items, score, strength };
 }
 
-function calculateEvidenceScore(evidence: EvidenceRow[], coverage: CoverageItem[]): number {
+function calculateEvidenceScore(coverage: CoverageItem[]): number {
   let score = 0;
 
-  const catStatus = (cat: string) => coverage.find((c) => c.category === cat)?.status || 'Not found';
+  for (const item of coverage) {
+    const cat = COVERAGE_CATEGORIES.find((c) => c.category === item.category);
+    if (!cat) continue;
 
-  // Official website: +20 found/search, +10 additional if captured
-  if (catStatus('official_website') === 'Captured') {
-    score += 30;
-  } else if (catStatus('official_website') === 'Search evidence only') {
-    score += 20;
+    if (item.status === 'Found') {
+      score += cat.points;
+    } else if (item.status === 'Partial') {
+      score += Math.floor(cat.points * 0.5);
+    }
+    // "Not found" and "Not checked" contribute 0
   }
 
-  // Company activity: +15
-  if (catStatus('company_activity') === 'Captured') {
-    score += 15;
-  } else if (catStatus('company_activity') === 'Search evidence only') {
-    score += 10;
-  }
-
-  // Address/contact: +15
-  if (catStatus('contact_address') === 'Captured') {
-    score += 15;
-  } else if (catStatus('contact_address') === 'Search evidence only') {
-    score += 10;
-  }
-
-  // Management: +15
-  if (catStatus('ownership_management') === 'Captured') {
-    score += 15;
-  } else if (catStatus('ownership_management') === 'Search evidence only') {
-    score += 10;
-  }
-
-  // Registry: +20
-  if (catStatus('public_registry') === 'Captured') {
-    score += 20;
-  } else if (catStatus('public_registry') === 'Search evidence only') {
-    score += 10;
-  }
-
-  // LinkedIn/business profile: +10
-  const hasProfile = evidence.some(
-    (e) => (e.section_key === 'group_shareholding' || e.section_key === 'about_company') &&
-      (e.capture_status === 'captured' || e.capture_status === 'search_only')
-  );
-  if (hasProfile) score += 10;
-
-  // Adverse/sanctions checked: +10
-  const hasAdverseCheck = evidence.some(
-    (e) => e.section_key === 'adverse_media' || e.section_key === 'sanctions_watchlist'
-  );
-  if (hasAdverseCheck) score += 10;
-
-  // Penalties — only for clear issues, not bulk failures
-  const hasAdverseFlag = evidence.some((e) =>
-    e.flags?.includes('adverse_found') || e.flags?.includes('sanction_match')
-  );
-  if (hasAdverseFlag) score -= 30;
-
-  // Penalty if captured sources are irrelevant (shouldn't happen after filtering)
-  const capturedWithManualReview = evidence.filter(
-    (e) => e.capture_status === 'captured' && e.flags?.includes('manual_review_needed')
-  );
-  if (capturedWithManualReview.length > 0) score -= 10;
-
-  // Only penalize if section was actually checked and not found
-  if (catStatus('official_website') === 'Not found') score -= 15;
-  if (catStatus('public_registry') === 'Not found') score -= 10;
-  // "Not checked" sections don't penalize — they just don't add points
-
-  return Math.max(0, Math.min(100, score));
+  return Math.min(100, score);
 }
 
 export function generateFinalSummary(coverage: CoverageSummary): string {
-  const { score, strength, items } = coverage;
-  const captured = items.filter((i) => i.status === 'Captured');
-  const searchOnly = items.filter((i) => i.status === 'Search evidence only');
-  const notFound = items.filter((i) => i.status === 'Not found');
+  const { items } = coverage;
+  const found = items.filter((i) => i.status === 'Found').length;
+  const partial = items.filter((i) => i.status === 'Partial').length;
 
-  if (strength === 'Strong') {
-    return `Investigation completed with strong evidence coverage (score: ${score}/100). ${captured.length} categories verified with captured pages, ${searchOnly.length} supported by search snippets. Sufficient evidence collected for most verification categories.`;
+  if (found >= 5) {
+    return `Investigation completed. ${found} of 7 verification areas confirmed with captured evidence${partial > 0 ? `, ${partial} with partial evidence` : ''}.`;
   }
 
-  if (captured.length === 0 && searchOnly.length > 0) {
-    return `Investigation completed with limited captured evidence (score: ${score}/100). ${searchOnly.length} useful findings from search snippets, but direct page capture was limited. Manual verification is recommended for key findings.`;
+  if (found >= 3) {
+    const gaps = items.filter((i) => i.status === 'Not found' || i.status === 'Not checked').map((i) => i.label);
+    let text = `Investigation completed. ${found} areas confirmed${partial > 0 ? `, ${partial} partially covered` : ''}.`;
+    if (gaps.length > 0) text += ` Gaps: ${gaps.join(', ')}.`;
+    return text;
   }
 
-  if (strength === 'Moderate') {
-    const gaps = notFound.map((i) => i.label);
-    let summary = `Investigation completed with moderate evidence coverage (score: ${score}/100). ${captured.length} categories captured, ${searchOnly.length} with search evidence only.`;
-    if (gaps.length > 0) {
-      summary += ` Gaps: ${gaps.slice(0, 3).join(', ')}. Manual review recommended.`;
-    }
-    return summary;
+  if (found > 0 || partial > 0) {
+    return `Investigation completed with limited evidence. ${found} areas confirmed, ${partial} partially covered.`;
   }
 
-  // Weak
-  if (searchOnly.length > 0) {
-    return `Investigation completed with limited evidence (score: ${score}/100). Several useful facts were found from search snippets, but direct page capture was limited. Manual verification is recommended.`;
-  }
-
-  return `Investigation completed with weak evidence coverage (score: ${score}/100). Limited evidence available. Manual verification strongly recommended before relying on these findings.`;
+  return `Investigation completed. Limited public information available for verification.`;
 }

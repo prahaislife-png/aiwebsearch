@@ -12,7 +12,7 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json();
-    const { companyName, country, officialWebsite, reportType } = body;
+    const { companyName, country, officialWebsite } = body;
 
     if (!companyName || typeof companyName !== 'string') {
       return NextResponse.json(
@@ -30,7 +30,7 @@ export async function POST(request: Request) {
         company_name: companyName,
         country: country || null,
         official_website_input: officialWebsite || null,
-        report_type: reportType || 'basic',
+        report_type: 'enhanced',
         status: 'queued',
       })
       .select('id')

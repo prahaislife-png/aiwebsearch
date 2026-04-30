@@ -24,7 +24,6 @@ interface ReportRow {
   id: string;
   company_name: string;
   status: string;
-  report_type: string;
   created_at: string;
   user_id: string;
 }
@@ -157,7 +156,6 @@ export default function AdminPage() {
               <thead>
                 <tr className="border-b border-card-border text-left">
                   <th className="pb-3 text-muted font-medium">Company</th>
-                  <th className="pb-3 text-muted font-medium">Type</th>
                   <th className="pb-3 text-muted font-medium">Status</th>
                   <th className="pb-3 text-muted font-medium">Created</th>
                   <th className="pb-3 text-muted font-medium">Action</th>
@@ -167,7 +165,6 @@ export default function AdminPage() {
                 {reports.map((report) => (
                   <tr key={report.id} className="border-b border-card-border/50">
                     <td className="py-3 text-foreground">{report.company_name}</td>
-                    <td className="py-3 text-muted uppercase text-xs">{report.report_type}</td>
                     <td className="py-3">
                       <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
                         report.status === 'completed' ? 'bg-success/20 text-success' :

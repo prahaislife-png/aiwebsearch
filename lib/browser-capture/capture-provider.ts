@@ -19,8 +19,9 @@ export interface CaptureResult {
   screenshotBase64?: string;
   extractedText?: string;
   capturedAt: string;
-  status: 'success' | 'failed';
+  status: 'success' | 'failed' | 'blocked';
   errorMessage?: string;
+  blockReason?: string;
 }
 
 export interface CaptureProvider {

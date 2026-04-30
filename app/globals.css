@@ -1,16 +1,16 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f8fafc;
-  --foreground: #1e293b;
+  --background: #F5F3EC;
+  --foreground: #2F332F;
   --card: #ffffff;
-  --card-border: #e2e8f0;
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --muted: #64748b;
-  --success: #10b981;
-  --error: #ef4444;
-  --warning: #f59e0b;
+  --card-border: #E3DED3;
+  --accent: #586F52;
+  --accent-hover: #465A42;
+  --muted: #6E736C;
+  --success: #5E7358;
+  --error: #B5443C;
+  --warning: #A17B3A;
 }
 
 @theme inline {
@@ -36,19 +36,25 @@ body {
 
 input, select, textarea {
   background: #ffffff;
-  border: 1px solid #d1d5db;
-  border-radius: 0.5rem;
-  padding: 0.625rem 0.875rem;
-  color: #1e293b;
-  font-size: 0.875rem;
+  border: 1px solid #D8D3C8;
+  border-radius: 0.75rem;
+  padding: 0.8rem 1rem;
+  color: #353835;
+  font-size: 0.9rem;
   width: 100%;
-  transition: border-color 0.2s;
+  height: 48px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+input::placeholder, select::placeholder, textarea::placeholder {
+  color: #9A9A92;
 }
 
 input:focus, select:focus, textarea:focus {
   outline: none;
-  border-color: #2563eb;
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+  border-color: #5A7353;
+  box-shadow: 0 0 0 3px rgba(90, 115, 83, 0.12);
+  background: #ffffff;
 }
 
 button {
